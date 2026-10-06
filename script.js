@@ -4,7 +4,284 @@
 // Similarity + Service History + RAG + Anomaly Detection
 // ============================================================
 
-const API_URL = "http://127.0.0.1:8000";
+const API_URL = "http://127.0.0.1:8000/api/v1";
+
+// ============================================================
+// STATE & NAVIGATION
+// ============================================================
+
+let currentAnalysisResult = null;
+
+document.addEventListener("DOMContentLoaded", () => {
+    setupNavigation();
+});
+
+function setupNavigation() {
+    const navItems = document.querySelectorAll("#sidebar-nav .nav-item");
+    const views = document.querySelectorAll(".view-content");
+
+    navItems.forEach(btn => {
+        btn.addEventListener("click", () => {
+            // Update active button
+            navItems.forEach(b => b.classList.remove("active"));
+            btn.classList.add("active");
+
+            // Hide all views
+            views.forEach(v => v.classList.add("hidden"));
+
+            // Show selected view
+            const viewId = "view-" + btn.dataset.view;
+            const targetView = $(viewId);
+            if (targetView) {
+                targetView.classList.remove("hidden");
+                renderView(btn.dataset.view);
+            }
+        });
+    });
+}
+
+function renderView(viewName) {
+    if (viewName === "dashboard") return;
+
+    const containerId = viewName + "-container";
+    const container = $(containerId);
+    if (!container) return;
+
+    if (viewName === "incidents") {
+        container.innerHTML = `<div class="panel"><div class="panel-header"><h2>Loading incidents...</h2></div></div>`;
+        fetch(`${API_URL}/incidents`)
+            .then(res => res.json())
+            .then(data => {
+                let html = `
+                    <div class="panel">
+                        <div class="panel-header">
+                            <div>
+                                <span class="section-label">INCIDENT HISTORY</span>
+                                <h2>Recent Diagnosed Incidents</h2>
+                            </div>
+                        </div>
+                        <div class="panel-content">
+                            <table class="data-table" style="width: 100%; border-collapse: collapse;">
+                                <thead>
+                                    <tr style="text-align: left; border-bottom: 1px solid #333;">
+                                        <th style="padding: 10px;">Analysis ID</th>
+                                        <th style="padding: 10px;">Vehicle ID</th>
+                                        <th style="padding: 10px;">Model</th>
+                                        <th style="padding: 10px;">DTC</th>
+                                        <th style="padding: 10px;">Symptom</th>
+                                        <th style="padding: 10px;">Mileage</th>
+                                        <th style="padding: 10px;">Timestamp</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                `;
+                if (!data || data.length === 0) {
+                    html += `<tr><td colspan="7" style="padding: 10px; text-align: center;">No recorded incidents.</td></tr>`;
+                } else {
+                    data.forEach(inc => {
+                        html += `
+                            <tr style="border-bottom: 1px solid #222;">
+                                <td style="padding: 10px; color: #4facfe; cursor: pointer;" onclick="loadSpecificIncident('${inc.analysis_id}')">${safe(inc.analysis_id)}</td>
+                                <td style="padding: 10px;">${safe(inc.vehicle_id)}</td>
+                                <td style="padding: 10px;">${safe(inc.vehicle_model)}</td>
+                                <td style="padding: 10px;">${safe(inc.dtc_code)}</td>
+                                <td style="padding: 10px;">${safe(inc.symptom)}</td>
+                                <td style="padding: 10px;">${safe(inc.mileage)}</td>
+                                <td style="padding: 10px;">${new Date(inc.timestamp).toLocaleString()}</td>
+                            </tr>
+                        `;
+                    });
+                }
+                html += `</tbody></table></div></div>`;
+                container.innerHTML = html;
+            })
+            .catch(err => {
+                container.innerHTML = `<div class="panel"><p>Error loading incidents: ${err.message}</p></div>`;
+            });
+        return;
+    }
+    
+    if (!currentAnalysisResult) {
+        container.innerHTML = `
+            <div class="panel">
+                <div class="empty-state">Run a vehicle analysis on the Dashboard to populate this section.</div>
+            </div>`;
+        return;
+    }
+
+    if (viewName === "root-cause") {
+        // We can just move the resultsSection into this container, or clone it.
+        // Actually, since Root-Cause is supposed to show the investigation lead, we can clone resultsSection
+        const results = $("resultsSection");
+        container.innerHTML = "";
+        if (results) {
+            container.appendChild(results.cloneNode(true));
+        }
+    } else if (viewName === "anomaly") {
+        container.innerHTML = "";
+        const section = $("anomalyDetectionSection");
+        if (section) {
+            container.appendChild(section.cloneNode(true));
+        }
+    } else if (viewName === "service-history") {
+        const vid = currentAnalysisResult.vehicle_id;
+        container.innerHTML = `<div class="panel"><div class="panel-header"><h2>Loading service history...</h2></div></div>`;
+        fetch(`${API_URL}/vehicles/${vid}/service-history`)
+            .then(res => res.json())
+            .then(data => {
+                let html = `
+                    <div class="panel">
+                        <div class="panel-header">
+                            <div>
+                                <span class="section-label">SERVICE HISTORY</span>
+                                <h2>Previous Repairs & Outcomes</h2>
+                            </div>
+                        </div>
+                        <div class="panel-content">
+                `;
+                if (!data || data.length === 0) {
+                    html += `<p>No service-history records available for this vehicle.</p>`;
+                } else {
+                    html += `<ul style="list-style-type: none; padding: 0;">`;
+                    data.forEach(sh => {
+                        html += `
+                            <li style="margin-bottom: 15px; padding: 15px; background: rgba(255,255,255,0.05); border-radius: 6px;">
+                                <strong>Date:</strong> ${safe(sh.service_date)} | <strong>Type:</strong> ${safe(sh.service_type)}<br/>
+                                <strong>Component:</strong> ${safe(sh.component)} | <strong>Mileage:</strong> ${safe(sh.mileage)}<br/>
+                                <strong>Description:</strong> ${safe(sh.description)}
+                            </li>
+                        `;
+                    });
+                    html += `</ul>`;
+                }
+                html += `</div></div>`;
+                container.innerHTML = html;
+            })
+            .catch(err => {
+                container.innerHTML = `<div class="panel"><p>Error loading service history: ${err.message}</p></div>`;
+            });
+    } else if (viewName === "reports") {
+        container.innerHTML = `
+            <div class="panel">
+                <div class="panel-header">
+                    <div>
+                        <span class="section-label">DIAGNOSTIC REPORT</span>
+                        <h2>Full Analysis Report</h2>
+                    </div>
+                    <button class="analyze-button" onclick="window.print()" style="width: auto; padding: 10px 20px;">
+                        Print / Save Report
+                    </button>
+                </div>
+                <div class="panel-content" style="margin-top: 20px; line-height: 1.6;">
+                    <h3>Vehicle Information</h3>
+                    <p><strong>Vehicle ID:</strong> ${safe(currentAnalysisResult.incident?.vehicle_id || currentAnalysisResult.vehicle_id)}</p>
+                    <p><strong>DTC Code:</strong> ${safe(currentAnalysisResult.incident?.dtc_code || "Unknown")}</p>
+                    <p><strong>Symptom:</strong> ${safe(currentAnalysisResult.incident?.symptom || "Unknown")}</p>
+                    
+                    <h3>Investigation Lead</h3>
+                    <p>${safe((currentAnalysisResult.investigation_leads || []).join(" "))}</p>
+                    
+                    <h3>Evidence Summary</h3>
+                    <ul>
+                        ${(currentAnalysisResult.evidence_summary || []).map(e => `<li>${safe(e)}</li>`).join("")}
+                    </ul>
+                    <div id="reportLatestFeedback"></div>
+                </div>
+            </div>
+        `;
+        
+        // Fetch service history for the report
+        fetch(`${API_URL}/vehicles/${currentAnalysisResult.vehicle_id}/service-history`)
+            .then(res => res.json())
+            .then(data => {
+                if (data && data.length > 0) {
+                    const latest = data[0]; // Assuming ordered by date DESC
+                    const feedbackDiv = $("reportLatestFeedback");
+                    if (feedbackDiv) {
+                        feedbackDiv.innerHTML = `
+                            <h3>Latest Technician Feedback</h3>
+                            <p><strong>Date:</strong> ${safe(latest.service_date)}</p>
+                            <p><strong>Actual Repair:</strong> ${safe(latest.actual_repair || latest.description)}</p>
+                            <p><strong>Outcome:</strong> ${safe(latest.outcome || "Unknown")}</p>
+                        `;
+                    }
+                }
+            })
+            .catch(err => console.error("Error loading service history for report:", err));
+    }
+}
+
+async function loadSpecificIncident(analysisId) {
+    try {
+        const res = await fetch(`${API_URL}/incidents/${analysisId}`);
+        if (!res.ok) throw new Error("Failed to fetch incident");
+        const data = await res.json();
+        
+        if (data.similarity && data.anomaly && data.rag) {
+            // It's the full DiagnosticResponse stored natively!
+            currentAnalysisResult = data;
+        } else {
+            // Legacy / Fallback reconstruction
+            const incidentData = {
+                LOAD_PCT: data.LOAD_PCT,
+                ECT: data.ECT,
+                MAP: data.MAP,
+                RPM: data.RPM,
+                VSS: data.VSS,
+                IAT: data.IAT,
+                MAF: data.MAF,
+                FRP: data.FRP,
+                BARO: data.BARO,
+                VPWR: data.VPWR,
+                AAT: data.AAT,
+                Mode: data.Mode,
+                dtc_code: data.dtc_code,
+                symptom: data.symptom,
+                mileage: data.mileage
+            };
+
+            const reconstructed = {
+                analysis_id: data.analysis_id,
+                vehicle_id: data.vehicle_id,
+                incident: incidentData,
+                similarity: {
+                    top_score: data.top_similarity_score,
+                    top_cases: [],
+                    summary: "Loaded from database (legacy record)."
+                },
+                anomaly: {
+                    anomaly: data.anomaly === 1 || data.anomaly === true,
+                    anomaly_score: data.anomaly_score,
+                    severity: data.severity,
+                    feature_contributions: []
+                },
+                rag: { exact_dtc_matches: [], semantic_matches: [] },
+                service_history: { available: false, reason: "" },
+                evidence_summary: data.evidence_summary || [],
+                investigation_leads: data.investigation_leads || []
+            };
+
+            currentAnalysisResult = reconstructed;
+        }
+        
+        displayResults(currentAnalysisResult);
+        
+        // Switch to dashboard view to see it
+        const navItems = document.querySelectorAll("#sidebar-nav .nav-item");
+        const views = document.querySelectorAll(".view-content");
+        navItems.forEach(b => b.classList.remove("active"));
+        views.forEach(v => v.classList.add("hidden"));
+        
+        const dashBtn = document.querySelector('[data-view="dashboard"]');
+        if (dashBtn) dashBtn.classList.add("active");
+        const targetView = $("view-dashboard");
+        if (targetView) targetView.classList.remove("hidden");
+        
+    } catch (error) {
+        console.error(error);
+        alert("Could not load incident: " + error.message);
+    }
+}
 
 
 // ============================================================
@@ -68,66 +345,24 @@ function percent(v) {
 async function analyzeIncident() {
 
     const incident = {
+        vehicle_id: value("vehicleId", "V102"),
+        vehicle_model: value("vehicleModel", "Truck_X"),
+        mileage: number("odometer", 82450),
+        dtc_code: value("dtcCode", "P0403, P0404"),
+        symptom: value("symptom", "Low engine power"),
 
-        vehicle_model:
-            value("vehicleModel", "Truck_X"),
-
-        dtc_code:
-            value("dtcCode", "P0420"),
-
-        odometer_km:
-            number("odometer", 82450),
-
-        engine_rpm:
-            number("engineRpm", 2200),
-
-        vehicle_speed_kmph:
-            number("vehicleSpeed", 55),
-
-        engine_load_pct:
-            number("engineLoad", 78),
-
-        coolant_temp_c:
-            number("coolantTemp", 98),
-
-        intake_air_temp_c: 34,
-
-        map_kpa: 73,
-
-        maf_gps: 42,
-
-        throttle_position_pct: 43,
-
-        fuel_pressure_kpa: 350,
-
-        stft_bank1_pct: 5,
-
-        ltft_bank1_pct: 11,
-
-        stft_bank2_pct: 4,
-
-        ltft_bank2_pct: 10,
-
-        o2_b1s1_v: 0.65,
-
-        o2_b1s2_v: 0.60,
-
-        o2_b2s1_v: 0.64,
-
-        o2_b2s2_v: 0.59,
-
-        timing_advance_deg: 18,
-
-        battery_voltage_v: 13.8,
-
-        engine_runtime_sec: 4200,
-
-        fuel_level_pct: 55,
-
-        ambient_temp_c: 30,
-
-        symptom:
-            value("symptom", "Low engine power")
+        LOAD_PCT: number("engineLoad", 26.3),
+        ECT: number("coolantTemp", 169.0),
+        MAP: 14.4,
+        RPM: number("engineRpm", 790.0),
+        VSS: number("vehicleSpeed", 0.0),
+        IAT: 106.0,
+        MAF: 0.02,
+        FRP: 4507.5,
+        BARO: number("baro", 14.2),
+        VPWR: 13.64,
+        AAT: 126.0,
+        Mode: 0
     };
 
 
@@ -157,10 +392,14 @@ async function analyzeIncident() {
 
 
         if (!response.ok) {
-
-            throw new Error(
-                `Backend error: ${response.status}`
-            );
+            let errorMsg = `Backend error: ${response.status}`;
+            try {
+                const errData = await response.json();
+                if (errData.detail) {
+                    errorMsg = typeof errData.detail === "string" ? errData.detail : JSON.stringify(errData.detail);
+                }
+            } catch(e) {}
+            throw new Error(errorMsg);
         }
 
 
@@ -182,12 +421,9 @@ async function analyzeIncident() {
             );
         }
 
+        currentAnalysisResult = data;
 
         displayResults(data);
-
-
-        // Load anomaly detection separately
-        await loadAnomalies();
 
     }
 
@@ -208,6 +444,88 @@ async function analyzeIncident() {
 
         setLoading(false);
 
+    }
+}
+
+
+// ============================================================
+// SUBMIT REPAIR FEEDBACK
+// ============================================================
+
+async function submitRepairFeedback() {
+    if (!currentAnalysisResult) {
+        alert("Run or load a vehicle analysis before recording technician feedback.");
+        return;
+    }
+
+    const actualRepair = value("feedbackActualRepair").trim();
+    const outcome = value("feedbackOutcome");
+
+    if (!actualRepair || !outcome) {
+        alert("Please enter the actual repair performed and select an outcome.");
+        return;
+    }
+
+    const payload = {
+        vehicle_id: currentAnalysisResult.vehicle_id || "",
+        vehicle_model: $("feedbackVehicleModel").textContent || "Unknown",
+        mileage: Number($("feedbackMileage").textContent) || 0,
+        dtc_code: $("feedbackDtcCode").textContent || "Unknown",
+        actual_repair: actualRepair,
+        outcome: outcome
+    };
+
+    const btn = $("submitFeedbackBtn");
+    const statusText = $("feedbackStatusText");
+
+    if (btn) btn.disabled = true;
+    const btnText = $("feedbackBtnText");
+    if (btnText) btnText.textContent = "SAVING...";
+    
+    if (statusText) {
+        statusText.textContent = "Saving repair feedback...";
+        statusText.style.color = "#55d6ff";
+    }
+
+    try {
+        const response = await fetch(`${API_URL}/repair-feedback`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        });
+
+        if (!response.ok) {
+            let errorMsg = `Backend error: ${response.status}`;
+            try {
+                const errData = await response.json();
+                if (errData.detail) {
+                    errorMsg = typeof errData.detail === "string" ? errData.detail : JSON.stringify(errData.detail);
+                }
+            } catch(e) {}
+            throw new Error(errorMsg);
+        }
+
+        const data = await response.json();
+        
+        if (statusText) {
+            statusText.textContent = "Repair feedback saved successfully.";
+            statusText.style.color = "#57e0b1";
+        }
+        if (btnText) {
+            btnText.textContent = "SAVED";
+        }
+        
+        // Refresh Service History by dynamically rendering it in the background
+        renderView("service-history");
+
+    } catch (error) {
+        console.error(error);
+        if (statusText) {
+            statusText.textContent = `Error: ${error.message}`;
+            statusText.style.color = "#ff5050";
+        }
+        if (btn) btn.disabled = false;
+        if (btnText) btnText.textContent = "SUBMIT REPAIR FEEDBACK";
     }
 }
 
@@ -275,24 +593,21 @@ function displayResults(data) {
 
 
     const incident =
-        data.current_incident || {};
+        data.incident || {};
 
 
     const similar =
-        Array.isArray(data.similar_cases)
-            ? data.similar_cases
+        (data.similarity && Array.isArray(data.similarity.top_cases))
+            ? data.similarity.top_cases
             : [];
 
 
-    const service =
-        Array.isArray(data.service_history)
-            ? data.service_history
-            : [];
+    const service = []; // Service history records are not provided in array form from the ML backend
 
 
     const rag =
-        Array.isArray(data.rag_evidence)
-            ? data.rag_evidence
+        (data.rag && Array.isArray(data.rag.exact_dtc_matches))
+            ? data.rag.exact_dtc_matches
             : [];
 
 
@@ -300,20 +615,22 @@ function displayResults(data) {
     // HYPOTHESIS
     // --------------------------------------------------------
 
-    const hypothesis =
-        data.hypothesis ||
-        buildHypothesis(
-            incident,
-            similar,
-            service
-        );
-
-
-    if ($("hypothesisText")) {
-
-        $("hypothesisText").textContent =
-            hypothesis;
-
+    const hypothesisList = $("hypothesisList");
+    if (hypothesisList) {
+        if (Array.isArray(data.investigation_leads) && data.investigation_leads.length > 0) {
+            hypothesisList.innerHTML = data.investigation_leads.map(lead => `<li style="margin-bottom: 8px;">${safe(lead)}</li>`).join("");
+        } else {
+            hypothesisList.innerHTML = `<li>No investigation leads available from pipeline.</li>`;
+        }
+    }
+    
+    const evidenceSummaryList = $("evidenceSummaryList");
+    if (evidenceSummaryList) {
+        if (Array.isArray(data.evidence_summary) && data.evidence_summary.length > 0) {
+            evidenceSummaryList.innerHTML = data.evidence_summary.map(item => `<li style="margin-bottom: 8px;">${safe(item)}</li>`).join("");
+        } else {
+            evidenceSummaryList.innerHTML = `<li>No evidence summary available.</li>`;
+        }
     }
 
 
@@ -321,34 +638,28 @@ function displayResults(data) {
     // STATISTICS
     // --------------------------------------------------------
 
-    const stats =
-        data.statistics || {};
-
 
     setText(
         "similarCount",
-        stats.similar_cases ??
         similar.length
     );
 
 
     setText(
         "serviceEvidenceCount",
-        stats.service_cases ??
-        service.length
+        "N/A"
     );
 
 
     setText(
         "resolvedCount",
-        stats.resolved_cases ??
-        countResolved(service)
+        "N/A"
     );
 
 
     const similarity =
         percent(
-            stats.average_similarity || 0
+            data.similarity ? data.similarity.top_score : 0
         );
 
 
@@ -364,13 +675,35 @@ function displayResults(data) {
 
     renderSimilarCases(similar);
 
-    renderServiceHistory(service);
+    // We can show the reason if available
+    renderServiceHistory(data.service_history);
 
-    renderRAG(rag);
+    renderRAG(data.rag);
 
+    renderAnomalies(data.anomaly);
 
-    // Create anomaly section
-    createAnomalySection();
+    // Populate Technician Feedback form
+    if ($("feedbackSection")) {
+        $("feedbackVehicleId").textContent = data.incident?.vehicle_id || data.vehicle_id || "";
+        $("feedbackVehicleModel").textContent = data.incident?.vehicle_model || "";
+        $("feedbackMileage").textContent = data.incident?.mileage || "";
+        $("feedbackDtcCode").textContent = data.incident?.dtc_code || "";
+        
+        $("feedbackActualRepair").value = "";
+        $("feedbackOutcome").value = "";
+        
+        const statusText = $("feedbackStatusText");
+        if (statusText) {
+            statusText.textContent = "Record technician feedback after completing the repair.";
+            statusText.style.color = "#94a8bb";
+        }
+        
+        const btn = $("submitFeedbackBtn");
+        if (btn) btn.disabled = false;
+        
+        const btnText = $("feedbackBtnText");
+        if (btnText) btnText.textContent = "SUBMIT REPAIR FEEDBACK";
+    }
 
 }
 
@@ -397,124 +730,35 @@ function setText(id, text) {
 // ============================================================
 
 function renderSimilarCases(cases) {
-
-    const table =
-        $("similarCasesTable");
-
-
+    const table = $("similarCasesTable");
     if (!table) return;
 
-
     table.innerHTML = "";
-
-
     if (!cases.length) {
-
-        table.innerHTML = `
-            <tr>
-                <td colspan="6">
-                    No similar historical cases found.
-                </td>
-            </tr>
-        `;
-
+        table.innerHTML = `<tr><td colspan="3">No similar historical cases found.</td></tr>`;
         return;
     }
 
+    cases.slice(0, 10).forEach((item, index) => {
+        const similarityVal = percent(get(item, ["similarity_score", "similarity"], 0));
+        const recordId = get(item, ["record_id", "id", "historical_index"], index + 1);
+        const dtc = get(item, ["dtc_signature", "dtc_code", "dtc"], "N/A");
 
-    cases
-        .slice(0, 10)
-        .forEach((item, index) => {
-
-            const similarity =
-                percent(
-                    get(
-                        item,
-                        [
-                            "similarity_score",
-                            "similarity"
-                        ],
-                        0
-                    )
-                );
-
-
-            const row =
-                document.createElement("tr");
-
-
-            row.innerHTML = `
-
-                <td>
-                    ${safe(
-                        get(
-                            item,
-                            ["record_id", "id"],
-                            index + 1
-                        )
-                    )}
-                </td>
-
-                <td>
-                    ${safe(
-                        get(
-                            item,
-                            ["vehicle_id"],
-                            "-"
-                        )
-                    )}
-                </td>
-
-                <td>
-                    ${safe(
-                        get(
-                            item,
-                            ["vehicle_model"],
-                            "-"
-                        )
-                    )}
-                </td>
-
-                <td>
-                    ${safe(
-                        get(
-                            item,
-                            ["dtc_code"],
-                            "-"
-                        )
-                    )}
-                </td>
-
-                <td>
-                    ${safe(
-                        get(
-                            item,
-                            ["symptom", "complaint"],
-                            "-"
-                        )
-                    )}
-                </td>
-
-                <td>
-                    <strong>
-                        ${similarity.toFixed(1)}%
-                    </strong>
-                </td>
-
-            `;
-
-
-            table.appendChild(row);
-
-        });
+        const row = document.createElement("tr");
+        row.innerHTML = `
+            <td>Case #${safe(recordId)}</td>
+            <td>${safe(dtc)}</td>
+            <td><strong>${similarityVal.toFixed(1)}%</strong></td>
+        `;
+        table.appendChild(row);
+    });
 }
-
 
 // ============================================================
 // SERVICE HISTORY
 // ============================================================
 
-function renderServiceHistory(records) {
+function renderServiceHistory(serviceData) {
 
     const table =
         $("serviceHistoryTable");
@@ -526,12 +770,27 @@ function renderServiceHistory(records) {
     table.innerHTML = "";
 
 
+    if (!serviceData || !serviceData.available) {
+
+        table.innerHTML = `
+            <tr>
+                <td colspan="7">
+                    ${safe(serviceData ? serviceData.reason : "No service history found.")}
+                </td>
+            </tr>
+        `;
+
+        return;
+    }
+
+    const records = serviceData.records || [];
+
     if (!records.length) {
 
         table.innerHTML = `
             <tr>
                 <td colspan="7">
-                    No service history found.
+                    No service history records available.
                 </td>
             </tr>
         `;
@@ -646,538 +905,141 @@ function renderServiceHistory(records) {
 // RAG
 // ============================================================
 
-function renderRAG(records) {
+function renderRAG(ragData) {
+    const exactContainer = $("ragExactMatches");
+    const semanticContainer = $("ragSemanticMatches");
+    if (!exactContainer || !semanticContainer) return;
 
-    const container =
-        $("ragEvidence");
+    exactContainer.innerHTML = "";
+    semanticContainer.innerHTML = "";
 
+    const exact = (ragData && Array.isArray(ragData.exact_dtc_matches)) ? ragData.exact_dtc_matches : [];
+    const semantic = (ragData && Array.isArray(ragData.semantic_matches)) ? ragData.semantic_matches : [];
 
-    if (!container) return;
+    const renderCard = (item) => {
+        const dtc = get(item, ["DTC_code", "dtc"], "");
+        const title = get(item, ["title", "name"], "Knowledge Evidence");
+        const desc = get(item, ["description", "text", "content"], "");
+        const component = get(item, ["affected_components"], []).join(", ") || "Unknown";
+        const causes = get(item, ["common_causes"], []).join(", ") || "Unknown";
 
-
-    container.innerHTML = "";
-
-
-    if (!records.length) {
-
-        container.innerHTML = `
-            <div class="empty-state">
-                No additional knowledge evidence found.
+        return `
+            <div class="rag-case-card" style="margin-bottom: 0;">
+                <div class="rag-case-top">
+                    <div class="rag-case-title">
+                        <span class="rag-badge">${safe(dtc)}</span>
+                        <strong>${safe(title)}</strong>
+                    </div>
+                </div>
+                <p style="color: #d9e3ed; font-size: 13px; margin: 8px 0;">${safe(desc)}</p>
+                <div class="rag-case-grid" style="grid-template-columns: 1fr 1fr; margin-top: 12px;">
+                    <div>
+                        <span class="rag-label">Affected Components</span>
+                        <strong>${safe(component)}</strong>
+                    </div>
+                    <div>
+                        <span class="rag-label">Common Causes</span>
+                        <strong>${safe(causes)}</strong>
+                    </div>
+                </div>
             </div>
         `;
+    };
 
-        return;
+    if (exact.length === 0) {
+        exactContainer.innerHTML = `<div class="empty-state">No exact DTC matches found.</div>`;
+    } else {
+        exactContainer.innerHTML = exact.map(renderCard).join("");
     }
 
-
-    records
-        .slice(0, 8)
-        .forEach(item => {
-
-            const card =
-                document.createElement("div");
-
-
-            card.className =
-                "rag-card";
-
-
-            card.innerHTML = `
-
-                <h4>
-                    ${safe(
-                        get(
-                            item,
-                            [
-                                "title",
-                                "topic",
-                                "name"
-                            ],
-                            "Knowledge Evidence"
-                        )
-                    )}
-                </h4>
-
-                <p>
-                    ${safe(
-                        get(
-                            item,
-                            [
-                                "text",
-                                "content",
-                                "description",
-                                "evidence"
-                            ],
-                            ""
-                        )
-                    )}
-                </p>
-
-            `;
-
-
-            container.appendChild(card);
-
-        });
+    if (semantic.length === 0) {
+        semanticContainer.innerHTML = `<div class="empty-state">No semantic matches found.</div>`;
+    } else {
+        semanticContainer.innerHTML = semantic.map(renderCard).join("");
+    }
 }
-
 
 // ============================================================
 // ANOMALY SECTION
 // ============================================================
 
-function createAnomalySection() {
-
-    const results =
-        $("resultsSection");
-
-
-    if (!results) return null;
-
-
-    let section =
-        $("anomalyDetectionSection");
-
-
-    if (section) {
-
-        return section;
-
-    }
-
-
-    section =
-        document.createElement("section");
-
-
-    section.id =
-        "anomalyDetectionSection";
-
-
-    section.className =
-        "anomaly-detection-section";
-
-
-    section.innerHTML = `
-
-        <div class="anomaly-title-area">
-
-            <div class="anomaly-label">
-                AI • ANOMALY DETECTION
-            </div>
-
-            <h2>
-                Fleet Anomalies & Unusual Patterns
-            </h2>
-
-            <p>
-                Detect unusual vehicle behavior,
-                DTC spikes and uncommon combinations.
-            </p>
-
-        </div>
-
-
-        <div class="anomaly-summary-grid">
-
-            <div class="anomaly-summary-card">
-
-                <div
-                    class="anomaly-number"
-                    id="vehicleAnomalyCount"
-                >
-                    0
-                </div>
-
-                <div class="anomaly-name">
-                    Vehicle Anomalies
-                </div>
-
-            </div>
-
-
-            <div class="anomaly-summary-card">
-
-                <div
-                    class="anomaly-number"
-                    id="fleetSpikeCount"
-                >
-                    0
-                </div>
-
-                <div class="anomaly-name">
-                    Fleet DTC Spikes
-                </div>
-
-            </div>
-
-
-            <div class="anomaly-summary-card">
-
-                <div
-                    class="anomaly-number"
-                    id="combinationAnomalyCount"
-                >
-                    0
-                </div>
-
-                <div class="anomaly-name">
-                    Uncommon Combinations
-                </div>
-
-            </div>
-
-        </div>
-
-
-        <div class="anomaly-group">
-
-            <div class="anomaly-section-label">
-                VEHICLE-LEVEL ANOMALIES
-            </div>
-
-            <h3>
-                Unusual Vehicle Events
-            </h3>
-
-            <div
-                id="vehicleAnomaliesList"
-                class="anomaly-list"
-            >
-                Loading...
-            </div>
-
-        </div>
-
-
-        <div class="anomaly-group">
-
-            <div class="anomaly-section-label">
-                FLEET-LEVEL PATTERNS
-            </div>
-
-            <h3>
-                DTC Spike Detection
-            </h3>
-
-            <div
-                id="fleetSpikesList"
-                class="anomaly-list"
-            >
-                Loading...
-            </div>
-
-        </div>
-
-
-        <div class="anomaly-group">
-
-            <div class="anomaly-section-label">
-                RELATIONSHIP ANOMALIES
-            </div>
-
-            <h3>
-                Uncommon DTC + Vehicle Combinations
-            </h3>
-
-            <div
-                id="combinationAnomaliesList"
-                class="anomaly-list"
-            >
-                Loading...
-            </div>
-
-        </div>
-
-
-        <div class="anomaly-help">
-
-            <strong>
-                How anomaly detection helps
-            </strong>
-
-            <p>
-                The system highlights unusual patterns
-                that may deserve engineering investigation.
-                An anomaly does not automatically mean
-                a component has failed.
-            </p>
-
-        </div>
-
-
-        <div class="anomaly-human-check">
-
-            <strong>
-                Human Verification Required
-            </strong>
-
-            <p>
-                SyntaxSquad provides evidence-based
-                investigation leads from historical fleet
-                data. Final diagnosis and repair decisions
-                must be performed by a qualified mechanic
-                or engineer.
-            </p>
-
-        </div>
-    `;
-
-
-    // ========================================================
-    // IMPORTANT FIX
-    // Never use insertBefore() here.
-    // appendChild is safe and removes the previous DOM error.
-    // ========================================================
-
-    results.appendChild(section);
-
-
-    return section;
-}
-
-
-// ============================================================
-// LOAD ANOMALIES
-// ============================================================
-
-async function loadAnomalies() {
-
-    createAnomalySection();
-
-
-    try {
-
-        console.log(
-            "Loading /anomalies..."
-        );
-
-
-        const response =
-            await fetch(
-                `${API_URL}/anomalies`
-            );
-
-
-        if (!response.ok) {
-
-            throw new Error(
-                `/anomalies returned HTTP ${response.status}`
-            );
-
-        }
-
-
-        const raw =
-            await response.json();
-
-
-        console.log(
-            "ANOMALY RESPONSE:",
-            raw
-        );
-
-
-        if (raw.status === "error") {
-
-            throw new Error(
-                raw.message ||
-                "Anomaly backend error"
-            );
-
-        }
-
-
-        const data =
-            raw.data ||
-            raw.result ||
-            raw;
-
-
-        renderAnomalies(data);
-
-    }
-
-    catch (error) {
-
-        console.error(
-            "Anomaly detection error:",
-            error
-        );
-
-
-        renderAnomalyError(
-            error.message
-        );
-
-    }
-}
-
-
-// ============================================================
-// FIND ARRAY
-// ============================================================
-
-function findArray(data, names) {
-
-    if (!data || typeof data !== "object") {
-
-        return [];
-
-    }
-
-
-    for (const name of names) {
-
-        if (Array.isArray(data[name])) {
-
-            return data[name];
-
-        }
-
-    }
-
-
-    for (const key of Object.keys(data)) {
-
-        const nested =
-            data[key];
-
-
-        if (
-            nested &&
-            typeof nested === "object" &&
-            !Array.isArray(nested)
-        ) {
-
-            for (const name of names) {
-
-                if (
-                    Array.isArray(
-                        nested[name]
-                    )
-                ) {
-
-                    return nested[name];
-
-                }
-
-            }
-
-        }
-
-    }
-
-
-    return [];
-}
-
+function createAnomalySection() { return $("anomalySection"); }
 
 // ============================================================
 // RENDER ANOMALIES
 // ============================================================
 
-function renderAnomalies(data) {
+function renderAnomalies(anomalyData) {
+    const section = $("anomalySection");
+    if (!section) return;
+    
+    if (!anomalyData) {
+        section.classList.add("hidden");
+        return;
+    }
+    
+    section.classList.remove("hidden");
 
-    createAnomalySection();
+    const isAnomaly = anomalyData.anomaly ? "ANOMALY DETECTED" : "NORMAL";
+    const score = (anomalyData.anomaly_score || 0).toFixed(4);
+    const severity = (anomalyData.severity || "unknown").toUpperCase();
+    const features = anomalyData.feature_contributions || [];
 
+    let featuresHtml = "";
+    if (features.length === 0) {
+        featuresHtml = `<div class="empty-state">No significant feature deviations detected.</div>`;
+    } else {
+        featuresHtml = `
+            <table class="data-table" style="width: 100%; border-collapse: collapse; margin-top: 15px;">
+                <thead>
+                    <tr style="border-bottom: 1px solid rgba(255,255,255,0.1); text-align: left;">
+                        <th style="padding: 10px; color: #94a8bb;">Sensor</th>
+                        <th style="padding: 10px; color: #94a8bb;">Raw Value</th>
+                        <th style="padding: 10px; color: #94a8bb;">Deviation</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${features.map(f => `
+                        <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
+                            <td style="padding: 10px;"><strong>${safe(f.feature)}</strong></td>
+                            <td style="padding: 10px;">${safe(f.raw_value)}</td>
+                            <td style="padding: 10px; color: #ffaa32;">${Number(f.deviation_magnitude).toFixed(4)}</td>
+                        </tr>
+                    `).join("")}
+                </tbody>
+            </table>
+        `;
+    }
 
-    const vehicle =
-        findArray(
-            data,
-            [
-                "vehicle_anomalies",
-                "vehicle_level_anomalies",
-                "vehicleAnomalies",
-                "vehicle_events",
-                "unusual_vehicle_events"
-            ]
-        );
+    section.innerHTML = `
+        <div class="panel-header">
+            <div>
+                <span class="section-label">AI • ANOMALY DETECTION</span>
+                <h2>Fleet Anomalies & Unusual Patterns</h2>
+            </div>
+        </div>
 
+        <div class="anomaly-grid" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 20px;">
+            <div class="anomaly-card" style="background: rgba(15, 30, 48, 0.75); border: 1px solid rgba(100, 180, 255, 0.15); border-radius: 14px; padding: 18px;">
+                <span style="color: #9caec2; font-size: 13px; display: block; margin-bottom: 5px;">Status</span>
+                <strong style="font-size: 20px; color: ${anomalyData.anomaly ? '#ff5050' : '#57e0b1'};">${isAnomaly}</strong>
+            </div>
+            <div class="anomaly-card" style="background: rgba(15, 30, 48, 0.75); border: 1px solid rgba(100, 180, 255, 0.15); border-radius: 14px; padding: 18px;">
+                <span style="color: #9caec2; font-size: 13px; display: block; margin-bottom: 5px;">Anomaly Score</span>
+                <strong style="font-size: 20px; color: #55d6ff;">${score}</strong>
+            </div>
+            <div class="anomaly-card" style="background: rgba(15, 30, 48, 0.75); border: 1px solid rgba(100, 180, 255, 0.15); border-radius: 14px; padding: 18px;">
+                <span style="color: #9caec2; font-size: 13px; display: block; margin-bottom: 5px;">Severity</span>
+                <strong style="font-size: 20px; color: #fff;">${severity}</strong>
+            </div>
+        </div>
 
-    const fleet =
-        findArray(
-            data,
-            [
-                "fleet_spikes",
-                "fleet_dtc_spikes",
-                "dtc_spikes",
-                "fleetSpikes",
-                "spikes"
-            ]
-        );
-
-
-    const combinations =
-        findArray(
-            data,
-            [
-                "uncommon_combinations",
-                "combination_anomalies",
-                "relationship_anomalies",
-                "combinationAnomalies",
-                "dtc_vehicle_combinations"
-            ]
-        );
-
-
-    console.log(
-        "Vehicle anomalies:",
-        vehicle
-    );
-
-
-    console.log(
-        "Fleet spikes:",
-        fleet
-    );
-
-
-    console.log(
-        "Combinations:",
-        combinations
-    );
-
-
-    setText(
-        "vehicleAnomalyCount",
-        vehicle.length
-    );
-
-
-    setText(
-        "fleetSpikeCount",
-        fleet.length
-    );
-
-
-    setText(
-        "combinationAnomalyCount",
-        combinations.length
-    );
-
-
-    renderAnomalyList(
-        "vehicleAnomaliesList",
-        vehicle,
-        "vehicle"
-    );
-
-
-    renderAnomalyList(
-        "fleetSpikesList",
-        fleet,
-        "fleet"
-    );
-
-
-    renderAnomalyList(
-        "combinationAnomaliesList",
-        combinations,
-        "combination"
-    );
+        <div style="margin-top: 25px;">
+            <h3 style="color: #55d6ff; font-size: 14px; margin-bottom: 10px;">FEATURE CONTRIBUTIONS</h3>
+            ${featuresHtml}
+        </div>
+    `;
 }
-
 
 // ============================================================
 // ANOMALY LIST
@@ -1533,48 +1395,15 @@ function renderAnomalyError(message) {
 // ============================================================
 
 async function checkBackend() {
-
     try {
-
-        const response =
-            await fetch(
-                `${API_URL}/status`
-            );
-
-
-        if (!response.ok) {
-
-            throw new Error(
-                `HTTP ${response.status}`
-            );
-
+        const response = await fetch(`${API_URL}/health`);
+        if (response.ok) {
+            console.log("Backend connected.");
         }
-
-
-        console.log(
-            "Backend connected."
-        );
-
-
-        createAnomalySection();
-
-        await loadAnomalies();
-
-
         return true;
-
-    }
-
-    catch (error) {
-
-        console.error(
-            "Backend offline:",
-            error
-        );
-
-
+    } catch (error) {
+        console.error("Backend offline:", error);
         return false;
-
     }
 }
 
@@ -1699,7 +1528,7 @@ document.addEventListener(
         );
 
 
-        createAnomalySection();
+        // createAnomalySection();
 
 
         await checkBackend();
@@ -1712,11 +1541,8 @@ document.addEventListener(
 // GLOBAL FUNCTIONS
 // ============================================================
 
-window.analyzeIncident =
-    analyzeIncident;
-
-window.loadAnomalies =
-    loadAnomalies;
+window.analyzeIncident = analyzeIncident;
+window.checkBackend = checkBackend;
 
 window.checkBackend =
     checkBackend;
